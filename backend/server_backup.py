@@ -12,8 +12,6 @@ from bson import ObjectId
 import os
 import random
 import string
-import ast
-
 
 # ---------------- ENV ---------------- #
 
@@ -124,44 +122,21 @@ def MathPrediction(booking_type: str, trip_type: str):
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    token = credentials.credentials
-
     try:
         payload = jwt.decode(
-            token,
+            credentials.credentials,
             SECRET_KEY,
             algorithms=[ALGORITHM]
         )
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token"
-        )
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload"
-        )
-
-    # IMPORTANT: safely handle ObjectId
-    try:
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
         user = await db.users.find_one({"_id": ObjectId(user_id)})
-    except Exception:
-        user = await db.users.find_one({"_id": user_id})
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-
-    return {
-        "id": str(user["_id"]),
-        "name": user.get("name"),
-        "email": user.get("email")
-    }
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        return {"id": str(user["_id"]), "name": user.get("name"), "email": user.get("email")}
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
 # ---------------- AUTH ---------------- #
 
@@ -221,91 +196,162 @@ async def me(user: dict = Depends(get_current_user)):
 # - train_prices
 # Use Motor async queries only.
 # DO NOT modify auth, models, or other routes.
-def _extract_available_seats(route_doc):
-    """
-    availability field is a STRING like:
-    "[{'date': '2-12-2023', 'status': 'AVAILABLE-0008'}, ...]"
-    """
-    raw = route_doc.get("availability")
-    if not raw:
-        return 0
-
-    try:
-        data = ast.literal_eval(raw)
-        if not isinstance(data, list):
-            return 0
-
-        # pick first AVAILABLE-XXXX
-        for d in data:
-            status = d.get("status", "")
-            if "AVAILABLE" in status:
-                return int(status.split("-")[-1])
-    except Exception:
-        return 0
-
-    return 0
 
 @api_router.post("/search")
 async def search_tickets(req: SearchRequest, user: dict = Depends(get_current_user)):
+    # Only trains supported by real search implementation
     if req.transport_type != "train":
-        raise HTTPException(status_code=400, detail="Only train search supported")
+        raise HTTPException(status_code=400, detail="Only 'train' transport_type is supported by this endpoint")
 
-    origin = req.origin.strip().upper()
-    destination = req.destination.strip().upper()
+    origin = (req.origin or "").strip()
+    destination = (req.destination or "").strip()
+    req_date = (req.date or "").strip()
 
     if not origin or not destination:
-        raise HTTPException(status_code=400, detail="Origin and destination required")
+        raise HTTPException(status_code=400, detail="origin and destination are required")
 
-    # 1. Load all routes that start/end roughly matching (cheap pre-filter)
-    cursor = db.train_routes.find({
-        "fromStnCode": origin
-    })
+    # discover likely collection names populated by CSV loader
+    coll_names = await db.list_collection_names()
+    schedule_candidates = ["train_schedules", "train_routes", "train_routes_prices", "train_routes_prices.csv", "train_routes"]
+    price_candidates = ["train_prices", "train_fares", "train_routes_prices", "train_prices"]
 
-    routes = await cursor.to_list(1000)
+    schedule_col_name = next((c for c in schedule_candidates if c in coll_names), None)
+    price_col_name = next((c for c in price_candidates if c in coll_names), None)
+
+    if not schedule_col_name:
+        raise HTTPException(status_code=500, detail="No train schedules collection found in database")
+
+    schedules_col = db[schedule_col_name]
+    prices_col = db[price_col_name] if price_col_name else None
+
+    # Build query that finds docs containing both origin & destination somewhere in their station data.
+    # Support documents where `stations` is an array of strings or array of objects with `name` / `station` fields.
+    query = {
+        "$and": [
+            {
+                "$or": [
+                    {"stations": origin},
+                    {"stations.name": {"$regex": f"^{origin}$", "$options": "i"}},
+                    {"route": {"$regex": origin, "$options": "i"}}
+                ]
+            },
+            {
+                "$or": [
+                    {"stations": destination},
+                    {"stations.name": {"$regex": f"^{destination}$", "$options": "i"}},
+                    {"route": {"$regex": destination, "$options": "i"}}
+                ]
+            }
+        ]
+    }
+
+    docs = await schedules_col.find(query).to_list(length=200)
+
     results = []
 
-    for route in routes:
-        raw_station_list = route.get("stationListParsed")
+    def _extract_station_names(stations):
+        out = []
+        if not stations:
+            return out
+        for s in stations:
+            if isinstance(s, str):
+                out.append(s)
+            elif isinstance(s, dict):
+                # common keys
+                for key in ("name", "station", "station_name", "code"):
+                    if key in s and s.get(key):
+                        out.append(s.get(key))
+                        break
+                else:
+                    # fallback to first value
+                    vals = [v for v in s.values() if isinstance(v, str) and v]
+                    out.append(vals[0] if vals else None)
+        return [o for o in out if o]
 
-        if not raw_station_list:
+    for doc in docs:
+        stations = doc.get("stations") or doc.get("route_stations") or []
+        station_names = _extract_station_names(stations)
+
+        # find indices
+        origin_idx = next((i for i, n in enumerate(station_names) if n and n.strip().lower() == origin.lower()), None)
+        dest_idx = next((i for i, n in enumerate(station_names) if n and n.strip().lower() == destination.lower()), None)
+
+        # if we couldn't find indices by exact match, try substring matching
+        if origin_idx is None:
+            origin_idx = next((i for i, n in enumerate(station_names) if n and origin.lower() in n.lower()), None)
+        if dest_idx is None:
+            dest_idx = next((i for i, n in enumerate(station_names) if n and destination.lower() in n.lower()), None)
+
+        if origin_idx is None or dest_idx is None or origin_idx >= dest_idx:
+            # not a valid route in correct order
             continue
 
-        # 2. stationListParsed IS A STRING -> convert safely
+        # helper to pull times from station entry
+        def _get_time_at(idx, prefer="departure"):
+            try:
+                item = stations[idx]
+            except Exception:
+                return ""
+            if isinstance(item, dict):
+                for key in ("departure", "dep_time", "departure_time", "dept", "time"):
+                    if key in item and item.get(key):
+                        return item.get(key)
+                # arrival keys
+                for key in ("arrival", "arr_time", "arrival_time"):
+                    if key in item and item.get(key):
+                        return item.get(key)
+            return ""
+
+        departure = _get_time_at(origin_idx, "departure") or doc.get("departure") or ""
+        arrival = _get_time_at(dest_idx, "arrival") or doc.get("arrival") or ""
+
+        # duration: try to compute from HH:MM pairs if possible
+        duration = doc.get("duration") or ""
         try:
-            stations = ast.literal_eval(raw_station_list)
+            if departure and arrival:
+                fmt = "%H:%M"
+                t1 = datetime.strptime(departure.strip(), fmt)
+                t2 = datetime.strptime(arrival.strip(), fmt)
+                diff = t2 - t1
+                if diff.total_seconds() < 0:
+                    diff += timedelta(days=1)
+                hrs = int(diff.total_seconds() // 3600)
+                mins = int((diff.total_seconds() % 3600) // 60)
+                duration = f"{hrs}h{mins:02d}m"
         except Exception:
-            continue
+            pass
 
-        if not isinstance(stations, list):
-            continue
+        train_number = doc.get("train_number") or doc.get("number") or doc.get("train_no") or doc.get("train") or None
 
-        codes = [s.get("stationCode") for s in stations if "stationCode" in s]
+        # Try to join price by train_number in prices collection if available
+        price = None
+        if prices_col and train_number:
+            # try several common key names
+            price_doc = await prices_col.find_one({"train_number": train_number}) or await prices_col.find_one({"number": train_number}) or await prices_col.find_one({"train_no": train_number})
+            if price_doc:
+                price = price_doc.get("price") or price_doc.get("fare") or price_doc.get("amount")
 
-        if origin not in codes or destination not in codes:
-            continue
+        # fallback: price may be in route doc itself
+        if price is None:
+            price = doc.get("price") or doc.get("fare") or doc.get("amount")
 
-        o_idx = codes.index(origin)
-        d_idx = codes.index(destination)
+        seats_available = doc.get("seats_available") or doc.get("seats") or doc.get("availability") or 0
 
-        if o_idx >= d_idx:
-            continue
-
-        dep = stations[o_idx].get("departureTime", "")
-        arr = stations[d_idx].get("arrivalTime", "")
-
-        results.append({
-            "id": route.get("trainNumber"),
-            "name": route.get("trainName"),
+        result = {
+            "id": train_number or str(doc.get("_id")),
+            "name": doc.get("name") or doc.get("train_name") or doc.get("title") or "",
             "from": origin,
             "to": destination,
-            "date": req.date,
-            "price": route.get("totalFare", 0),
-            "seats_available": _extract_available_seats(route),
-            "number": route.get("trainNumber"),
-            "departure": dep,
-            "arrival": arr,
-            "duration": str(route.get("duration", "")) + " min"
-        })
+            "date": req_date,
+            "price": int(price) if isinstance(price, (int, float)) or (isinstance(price, str) and price.isdigit()) else (price or 0),
+            "seats_available": int(seats_available) if isinstance(seats_available, (int, float)) or (isinstance(seats_available, str) and seats_available.isdigit()) else (seats_available or 0),
+            "number": str(train_number) if train_number else "",
+            "departure": departure or "",
+            "arrival": arrival or "",
+            "duration": duration or ""
+        }
+
+        results.append(result)
 
     return {"results": results}
 

@@ -35,29 +35,46 @@ const HomePage = () => {
     }
   };
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!origin || !destination) {
-      toast.error("Please enter origin and destination");
-      return;
-    }
+const handleSearch = async (e) => {
+  e.preventDefault();
 
-    setLoading(true);
-    try {
-      const response = await axios.post(`${API}/search`, {
-        origin,
-        destination,
-        date: format(date, "yyyy-MM-dd"),
-        transport_type: transportType
-      });
-      
-      navigate("/search", { state: { results: response.data.results, searchParams: { origin, destination, date, transportType } } });
-    } catch (error) {
-      toast.error("Search failed. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  if (!origin || !destination) {
+    toast.error("Please enter origin and destination");
+    return;
+  }
+
+  setLoading(true);
+
+  try {
+    const payload = {
+      origin: origin.trim().toUpperCase(),
+      destination: destination.trim().toUpperCase(),
+      date: format(date, "yyyy-MM-dd"),
+      transport_type: transportType
+    };
+
+    console.log("SEARCH PAYLOAD →", payload);
+
+    const response = await axios.post(`${API}/search`, payload);
+
+    console.log("SEARCH RESPONSE →", response.data);
+
+    navigate("/search", {
+      state: {
+        results: response.data.results,
+        searchParams: payload
+      }
+    });
+  } catch (error) {
+    console.error("SEARCH ERROR →", error.response || error);
+    toast.error(
+      error.response?.data?.detail || "Search failed"
+    );
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
