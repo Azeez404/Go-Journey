@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr
-from passlib.hash import bcrypt
+from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
@@ -14,7 +14,10 @@ import random
 import string
 import ast
 
-
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto"
+)
 # ---------------- ENV ---------------- #
 
 load_dotenv()
@@ -170,10 +173,12 @@ async def signup(user: UserSignup):
     if await db.users.find_one({"email": user.email}):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    hashed_password = pwd_context.hash(user.password)  # ✅ STRING ONLY
+
     result = await db.users.insert_one({
         "name": user.name,
         "email": user.email,
-        "password": bcrypt.hash(user.password),
+        "password": hashed_password,
         "created_at": datetime.utcnow().isoformat()
     })
 
@@ -193,7 +198,11 @@ async def signup(user: UserSignup):
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(user: UserLogin):
     found = await db.users.find_one({"email": user.email})
-    if not found or not bcrypt.verify(user.password, found["password"]):
+
+    if not found:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not pwd_context.verify(user.password, found["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     user_id = str(found["_id"])

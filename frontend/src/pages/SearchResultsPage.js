@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,16 @@ const SearchResultsPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { results, searchParams } = location.state || { results: [], searchParams: {} };
+  const [selectedTrain, setSelectedTrain] = useState("all");
+  const trainOptions = Array.from(
+    new Map(
+      results.map((trip) => [
+        trip.number,
+        { number: trip.number, name: trip.name }
+      ])
+    ).values()
+  );
+  
 
   const handleBooking = (trip) => {
     navigate(`/booking/${trip.id}`, { state: { trip, searchParams } });
@@ -33,6 +44,10 @@ const SearchResultsPage = () => {
   }
 
   const transportType = searchParams.transportType || "train";
+  const filteredResults =
+  selectedTrain === "all"
+    ? results
+    : results.filter((trip) => trip.number === selectedTrain);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
@@ -48,10 +63,31 @@ const SearchResultsPage = () => {
               {searchParams.origin} <ArrowRight className="w-4 h-4" /> {searchParams.destination}
             </p>
           </div>
+          {/* Train Filter */}
+          <div className="mb-6 max-w-sm">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Filter by Train
+            </label>
+
+            <select
+              className="w-full border rounded-md px-3 py-2"
+              value={selectedTrain}
+              onChange={(e) => setSelectedTrain(e.target.value)}
+            >
+              <option value="all">All Trains</option>
+
+              {trainOptions.map((train) => (
+                <option key={train.number} value={train.number}>
+                  {train.name} ({train.number})
+                </option>
+              ))}
+            </select>
+          </div>
+
 
           {/* Results */}
           <div className="space-y-4">
-            {results.map((trip) => (
+          {filteredResults.map((trip) => (
               <Card key={trip.id} className="card-hover shadow-lg border-0" data-testid={`trip-card-${trip.id}`}>
                 <CardContent className="p-6">
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">

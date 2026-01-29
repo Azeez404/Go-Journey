@@ -12,6 +12,15 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Train, Plane, Search, Clock, TrendingUp, Shield, Zap, CalendarIcon } from "lucide-react";
 import { format } from "date-fns";
+const STATIONS = [
+  { code: "JBP", name: "Jabalpur" },
+  { code: "SRID", name: "Somnath" },
+  { code: "NDLS", name: "New Delhi" },
+  { code: "MAS", name: "Chennai Central" },
+  { code: "CBE", name: "Coimbatore" },
+  { code: "MDU", name: "Madurai" },
+  { code: "BCT", name: "Mumbai Central" }
+];
 
 const HomePage = () => {
   const navigate = useNavigate();
@@ -98,85 +107,138 @@ const handleSearch = async (e) => {
             <CardDescription>Find trains and flights with AI-powered insights</CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="train" value={transportType} onValueChange={setTransportType}>
-              <TabsList className="grid w-full grid-cols-2 mb-6">
-                <TabsTrigger value="train" data-testid="train-tab" className="flex items-center gap-2">
-                  <Train className="w-4 h-4" />
-                  Train
-                </TabsTrigger>
-                <TabsTrigger value="flight" data-testid="flight-tab" className="flex items-center gap-2">
-                  <Plane className="w-4 h-4" />
-                  Flight
-                </TabsTrigger>
-              </TabsList>
+          <Tabs defaultValue="route" className="w-full">
+  <TabsList className="grid w-full grid-cols-2 mb-6">
+    <TabsTrigger value="route">Route Search</TabsTrigger>
+    <TabsTrigger value="pnr">PNR Search</TabsTrigger>
+  </TabsList>
 
-              <form onSubmit={handleSearch} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="origin">From</Label>
-                    <Input
-                      id="origin"
-                      data-testid="origin-input"
-                      placeholder="e.g., New Delhi"
-                      value={origin}
-                      onChange={(e) => setOrigin(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="destination">To</Label>
-                    <Input
-                      id="destination"
-                      data-testid="destination-input"
-                      placeholder="e.g., Mumbai"
-                      value={destination}
-                      onChange={(e) => setDestination(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
+  {/* ROUTE SEARCH */}
+  <TabsContent value="route">
+    <form onSubmit={handleSearch} className="space-y-5">
 
-                <div>
-                  <Label>Date</Label>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        data-testid="date-picker-btn"
-                        className="w-full justify-start text-left font-normal"
-                      >
-                        <CalendarIcon className="mr-2 h-4 w-4" />
-                        {date ? format(date, "PPP") : <span>Pick a date</span>}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0">
-                      <Calendar
-                        mode="single"
-                        selected={date}
-                        onSelect={setDate}
-                        disabled={(date) => date < new Date()}
-                      />
-                    </PopoverContent>
-                  </Popover>
-                </div>
+      {/* From / To */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>From</Label>
+          <select
+            className="w-full border rounded-md px-3 py-2"
+            value={origin}
+            onChange={(e) => setOrigin(e.target.value)}
+          >
+            <option value="">Select source station</option>
+            {STATIONS.map((s) => (
+              <option key={s.code} value={s.code}>
+                {s.name} ({s.code})
+              </option>
+            ))}
+          </select>
+        </div>
 
-                <Button
-                  type="submit"
-                  data-testid="search-btn"
-                  className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    "Searching..."
-                  ) : (
-                    <>
-                      <Search className="w-5 h-5 mr-2" />
-                      Search Tickets
-                    </>
-                  )}
-                </Button>
-              </form>
-            </Tabs>
+        <div>
+          <Label>To</Label>
+          <select
+            className="w-full border rounded-md px-3 py-2"
+            value={destination}
+            onChange={(e) => setDestination(e.target.value)}
+          >
+            <option value="">Select destination station</option>
+            {STATIONS.map((s) => (
+              <option key={s.code} value={s.code}>
+                {s.name} ({s.code})
+              </option>
+            ))}
+          </select>
+
+        </div>
+      </div>
+
+      {/* Quick Date Buttons */}
+      <div className="flex gap-2 flex-wrap">
+        <Button type="button" variant="outline" onClick={() => setDate(new Date())}>
+          Today
+        </Button>
+
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            setDate(new Date(Date.now() + 24 * 60 * 60 * 1000))
+          }
+        >
+          Tomorrow
+        </Button>
+
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            setDate(new Date(Date.now() + 2 * 24 * 60 * 60 * 1000))
+          }
+        >
+          +2 Days
+        </Button>
+
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            setDate(new Date(Date.now() + 3 * 24 * 60 * 60 * 1000))
+          }
+        >
+          +3 Days
+        </Button>
+      </div>
+
+      {/* Calendar */}
+      <div>
+        <Label>Date</Label>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" className="w-full justify-start">
+              <CalendarIcon className="mr-2 h-4 w-4" />
+              {format(date, "PPP")}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-auto p-0">
+            <Calendar
+              mode="single"
+              selected={date}
+              onSelect={setDate}
+              disabled={(d) => d < new Date()}
+            />
+          </PopoverContent>
+        </Popover>
+      </div>
+
+      {/* Search */}
+      <Button
+        type="submit"
+        className="w-full bg-blue-600 hover:bg-blue-700 h-12 text-lg"
+        disabled={loading}
+      >
+        {loading ? "Searching..." : "Search Trains"}
+      </Button>
+    </form>
+  </TabsContent>
+
+  {/* PNR SEARCH (UI ONLY) */}
+  <TabsContent value="pnr">
+    <div className="space-y-4">
+      <Label>PNR Number</Label>
+      <Input placeholder="Enter 10-digit PNR" disabled />
+
+      <Button className="w-full" disabled>
+        Search PNR (Coming Soon)
+      </Button>
+
+      <p className="text-sm text-muted-foreground text-center">
+        PNR lookup will be available in the next update.
+      </p>
+    </div>
+  </TabsContent>
+</Tabs>
+
           </CardContent>
         </Card>
 
